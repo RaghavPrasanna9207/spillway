@@ -115,12 +115,14 @@ def run(forecast, actual, tier_values, base, temps, policy, noise=True, seed=0, 
 
 
 def compare(forecast, actual, tier_values, base, temps, runs=10, **kw):
-    """{policy: {kpi: (mean, 95% CI half-width)}} for spill rate and spill cost over `runs` seeds."""
+    """{policy: {kpi: (mean, 95% CI half-width)}} over `runs` seeds. Labour cost differs between
+    policies when the re-plan changes overtime on the day."""
     out = {}
     for p in POLICIES:
         plans = [run(forecast, actual, tier_values, base, temps, p, seed=i, **kw)
                  for i in range(runs)]
-        out[p] = {k: _mean_ci([getattr(x, k) for x in plans]) for k in ("spill_rate", "spill_cost")}
+        out[p] = {k: _mean_ci([getattr(x, k) for x in plans])
+                  for k in ("spill_rate", "spill_cost", "labour_cost", "total_cost")}
     return out
 
 
