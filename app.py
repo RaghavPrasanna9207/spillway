@@ -1,6 +1,8 @@
 """SpillGuard: temp picker staffing and wave sequencing for one Sao Paulo FC over Black Friday
 weekend 2017. Run with `streamlit run app.py`."""
+import json
 import math
+import os
 
 import altair as alt
 import numpy as np
@@ -8,12 +10,31 @@ import pandas as pd
 import streamlit as st
 
 from spillguard import config as cfg
-from spillguard import data, model, sim
+from spillguard import data, llm, model, sim
 
 st.set_page_config(page_title="SpillGuard", layout="wide")
 START = pd.Timestamp(cfg.WINDOW_START)
 POLICY_NAMES = {"fifo": "FIFO", "earliest_truck": "Earliest truck first",
                 "replan": "Rolling re-plan"}
+# Pre-parsed what-ifs: used when no LLM is configured or today's call cap is used up.
+EXAMPLES = {sentence: llm.Scenario(**change).model_dump() for sentence, change in [
+    ("The Rio truck is running 45 minutes late",
+     {"truck_delay": [{"state": "RJ", "minutes": 45}]}),
+    ("Three temps didn't show up and two pack stations are down",
+     {"temp_no_shows": 3, "pack_stations_down": 2}),
+    ("Minas demand is up 30% and one permanent picker called in sick",
+     {"demand_change": [{"state": "MG", "pct": 30}], "perm_absent": 1}),
+    ("No more overtime and the agency can only send 20 temps a day",
+     {"overtime_hours": 0, "agency_daily": 20}),
+]}
+
+# LLM settings from .streamlit/secrets.toml (local or Streamlit Cloud); environment otherwise.
+try:
+    for k in ("LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY"):
+        if k in st.secrets:
+            os.environ.setdefault(k, str(st.secrets[k]))
+except FileNotFoundError:
+    pass
 
 if not (data.RAW / "olist_orders_dataset.csv").exists():
     st.error(f"Olist CSVs not found in {data.RAW}. Download them from "
@@ -49,6 +70,15 @@ def compare(buffer, penalty, limits, runs):
                        penalty_scale=penalty, overtime=plan.overtime, **limits)
 
 
+@st.cache_data(show_spinner="Re-planning from now...")
+def what_if(buffer, penalty, limits, now, change_json):
+    """(before, after) plans from hour `now`; raises ValueError for a change the plan cannot
+    absorb."""
+    plan = scenario(buffer, penalty, limits)[0]
+    return model.what_if(FORECAST * buffer, TIER_VALUES, BASE, plan, now,
+                         json.loads(change_json), penalty_scale=penalty, **limits)
+
+
 def at(hours):
     return START + pd.to_timedelta(hours, unit="h")
 
@@ -57,9 +87,73 @@ def brl(x):
     return f"R${x:,.0f}"
 
 
+def delta_brl(x):
+    return f"{'-' if x < 0 else '+'}R${abs(x):,.0f}"
+
+
 def md(text):
     """Escape $ for Markdown elements (captions, help), which read $...$ as LaTeX."""
     return text.replace("$", r"\$")
+
+
+def describe(change):
+    """One line per change in a scenario dict; empty when nothing changes."""
+    lines = [f"Demand {'in all states' if c['state'] is None else 'to ' + c['state']}: "
+             f"{c['pct']:+g}% from now" for c in change["demand_change"]]
+    lines += [f"Next {c['state']} truck leaves {c['minutes']:g} min late"
+              for c in change["truck_delay"]]
+    for field, label in [("temp_no_shows", "Temps on shift who did not turn up"),
+                         ("pack_stations_down", "Pack stations out of service"),
+                         ("perm_absent", "Permanent pickers absent until midnight")]:
+        if change[field]:
+            lines.append(f"{label}: {change[field]}")
+    if change["agency_daily"] is not None:
+        lines.append(f"Agency fills at most {change['agency_daily']} temp shifts a day")
+    if change["overtime_hours"] is not None:
+        lines.append(f"Overtime limited to {change['overtime_hours']:g} h per permanent picker "
+                     "a day")
+    if change["penalty_scale"] is not None:
+        lines.append(f"Late orders cost {change['penalty_scale']:g}x the current penalty")
+    return lines
+
+
+def briefing_facts(sentence, now, before, after):
+    """Solver results as labelled strings: the only numbers a briefing may use."""
+    added = after.temps - before.temps
+    starts = [f"{at(t):%a %H:%M} ({added[t]:+.0f})" for t in np.flatnonzero(added)]
+    return {
+        "What changed": sentence,
+        "Time now": f"{at(now):%a %H:%M}",
+        "Temp shifts, before -> after": f"{before.temps.sum():.0f} -> {after.temps.sum():.0f}",
+        "Shift starts that change": ", ".join(starts) or "none",
+        "Labour cost, before -> after": f"{brl(before.labour_cost)} -> {brl(after.labour_cost)}",
+        "Orders missing their truck from now, before -> after":
+            f"{before.spilled.sum():,.0f} -> {after.spilled.sum():,.0f}",
+        "Spill cost from now, before -> after":
+            f"{brl(before.spill_cost)} -> {brl(after.spill_cost)}",
+    }
+
+
+def template_briefing(f):
+    return (f"At {f['Time now']}, after \"{f['What changed']}\", temp shifts go "
+            f"{f['Temp shifts, before -> after']} and labour cost "
+            f"{f['Labour cost, before -> after']}. Orders missing their truck from now go "
+            f"{f['Orders missing their truck from now, before -> after']}, with spill cost "
+            f"{f['Spill cost from now, before -> after']}. Shift starts that change: "
+            f"{f['Shift starts that change']}.")
+
+
+def write_briefing(facts):
+    """(briefing, where it came from). Falls back to the template on any LLM failure."""
+    if not llm.configured():
+        return template_briefing(facts), "Template briefing: no LLM configured."
+    try:
+        return llm.briefing(facts), f"Written by {os.environ['LLM_MODEL']} from the numbers above."
+    except llm.CapReached:
+        reason = "today's LLM limit is used up"
+    except Exception as e:  # network, auth, or a briefing with invented numbers
+        reason = f"the LLM failed ({e})"
+    return template_briefing(facts), f"Template briefing: {reason}."
 
 
 # --- Sidebar -----------------------------------------------------------------
@@ -86,9 +180,9 @@ with st.sidebar:
         agency_night=st.slider("Agency night starts per day (22:00-04:00)", 0,
                                2 * int(lim.agency_night), int(lim.agency_night),
                                key="agency_night"),
-        overtime_daily=st.slider("Overtime hours per permanent picker per day", 0,
-                                 cfg.OVERTIME_MAX_H, cfg.OVERTIME_MAX_H, key="overtime")
-        * BASE * 24 / cfg.SHIFT_HOURS,
+        overtime_daily=model.overtime_cap(
+            st.slider("Overtime hours per permanent picker per day", 0, cfg.OVERTIME_MAX_H,
+                      cfg.OVERTIME_MAX_H, key="overtime"), BASE),
     )
     st.caption(f"{BASE} permanent pickers on every shift, sized to a normal day.")
 
@@ -208,3 +302,55 @@ if st.session_state.get("sim") == key:
 else:
     st.caption("FIFO, earliest-truck-first and the rolling re-plan, simulated with the temps "
                "above. Takes about 7 s per run.")
+
+# --- What-if -----------------------------------------------------------------
+st.subheader("What if...")
+now = st.select_slider("Now", options=list(range(1, len(fc))), value=14, key="now",
+                       format_func=lambda h: f"{at(h):%a %H:%M}")
+st.caption("Shifts starting at or before now stay as planned; later shifts, overtime and wave "
+           "order are re-planned. Missed trucks and spill cost count from now.")
+if llm.configured():
+    typed = st.text_input("What changed?", key="sentence",
+                          placeholder="e.g. Rio truck 45 min late and two pickers off sick")
+    if st.button("Read it", key="parse", disabled=not typed):
+        try:
+            st.session_state.change = (typed, llm.parse(typed).model_dump())
+        except llm.CapReached:
+            st.warning("Today's LLM limit is used up; pick an example instead.")
+        except Exception as e:  # network, auth, or a reply that is not a valid scenario
+            st.error(f"Could not read that: {e}")
+else:
+    st.caption("No LLM configured, so pick an example. To type your own, set LLM_MODEL and "
+               "LLM_API_KEY in .streamlit/secrets.toml.")
+pick = st.selectbox("Example", list(EXAMPLES), key="example")
+if st.button("Use example", key="use_example"):
+    st.session_state.change = (pick, EXAMPLES[pick])
+
+if "change" in st.session_state:
+    sentence, change = st.session_state.change
+    lines = describe(change)
+    st.markdown(md(f"**{sentence}**\n\n" + ("\n".join(f"- {x}" for x in lines)
+                                            or "Nothing in that sentence changes the plan.")))
+    wkey = (buffer, penalty, tuple(limits.items()), now, json.dumps(change))
+    if st.button("Apply", key="apply", disabled=not lines):
+        try:
+            before, after = what_if(buffer, penalty, limits, now, json.dumps(change))
+        except ValueError as e:
+            st.error(str(e))
+        else:
+            facts = briefing_facts(sentence, now, before, after)
+            st.session_state.result = (wkey, before, after, *write_briefing(facts))
+    if st.session_state.get("result", (None,))[0] == wkey:
+        _, before, after, text, source = st.session_state.result
+        cols = st.columns(4)
+        cols[0].metric("Temp shifts", f"{after.temps.sum():.0f}",
+                       f"{after.temps.sum() - before.temps.sum():+.0f}", delta_color="off")
+        cols[1].metric("Labour cost", brl(after.labour_cost),
+                       delta_brl(after.labour_cost - before.labour_cost), delta_color="inverse")
+        cols[2].metric("Orders missing their truck from now", f"{after.spilled.sum():,.0f}",
+                       f"{after.spilled.sum() - before.spilled.sum():+,.0f}",
+                       delta_color="inverse")
+        cols[3].metric("Spill cost from now", brl(after.spill_cost),
+                       delta_brl(after.spill_cost - before.spill_cost), delta_color="inverse")
+        st.info(md(text))
+        st.caption(md(source))

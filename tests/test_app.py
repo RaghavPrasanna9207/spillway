@@ -10,7 +10,8 @@ pytestmark = pytest.mark.skipif(not (data.RAW / "olist_orders_dataset.csv").exis
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
 
-def test_buffer_slider_moves_the_plan_and_simulation_runs():
+def test_buffer_slider_moves_the_plan_and_simulation_runs(monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "")  # the app keeps it over .streamlit/secrets.toml
     app = AppTest.from_file(APP, default_timeout=120).run()
     assert not app.exception
     labour = app.metric[1].value
@@ -24,3 +25,14 @@ def test_buffer_slider_moves_the_plan_and_simulation_runs():
     app.button(key="simulate").click().run()
     assert not app.exception
     assert len(app.dataframe) == 1
+
+
+def test_what_if_example_applies_without_an_llm(monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "")
+    app = AppTest.from_file(APP, default_timeout=120).run()
+    app.selectbox(key="example").select("The Rio truck is running 45 minutes late").run()
+    app.button(key="use_example").click().run()
+    app.button(key="apply").click().run()
+    assert not app.exception
+    assert len(app.metric) == 5 + 4  # headline row + before/after row
+    assert app.info[0].value.startswith("At Fri 14:00")  # template briefing

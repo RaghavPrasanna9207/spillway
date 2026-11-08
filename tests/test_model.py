@@ -138,6 +138,80 @@ def test_overtime_daily_cap_limits_it():
     assert plan.spilled.sum() == pytest.approx(25)
 
 
+def test_solve_keeps_pinned_start_hours():
+    # The 2x penalty wants 2 temps; hour 1 is pinned at 0, so both start at hour 0.
+    plan = solve(penalty_scale=2, fixed_temps=[np.nan, 0, np.nan, np.nan])
+    assert plan.temps[1] == 0
+    assert plan.temps.sum() == 2
+
+
+# What-ifs at 01:00 on the hand case. The day-before plan has one temp on shift for wave 1
+# (90 picked, 10 spilled); wave 1 has not run yet, so all 100 orders are waiting.
+def what_if(change=None, now=1, demand=DEMAND, **kw):
+    plan = model.solve(demand, VALUES, base=1, **{**HAND, **kw})
+    return model.what_if(demand, VALUES, 1, plan, now, change, **{**HAND, **kw})
+
+
+def test_what_if_without_change_repeats_the_plan():
+    before, after = what_if()
+    assert before.spilled.sum() == pytest.approx(10)
+    assert after.total_cost == pytest.approx(before.total_cost)
+
+
+def test_truck_delay_lets_a_later_wave_catch_the_truck():
+    # 03:00 -> 04:00: waves 1 and 2 both make it, 140 capacity for 100 orders.
+    after = what_if({"truck_delay": [{"state": "SP", "minutes": 60}]})[1]
+    assert after.spilled.sum() == pytest.approx(0)
+
+
+def test_no_show_removes_the_temp_on_shift():
+    # A replacement could start at 02:00 at the earliest, too late for the 03:00 truck.
+    after = what_if({"temp_no_shows": 1})[1]
+    assert after.temps.sum() == 0
+    assert after.spilled.sum() == pytest.approx(50)
+    with pytest.raises(ValueError):
+        what_if({"temp_no_shows": 2})
+
+
+def test_absent_permanent_picker_is_back_at_midnight():
+    # At 0.35x penalty the plan hires no temp. With the only picker out from 01:00, all 100
+    # orders miss 03:00. Back at midnight, waves 24-25 clear them for the 27:00 truck, one day
+    # late, and no temp is worth hiring; out for good, a temp would be (~R$244 to avoid
+    # R$1,312 of backlog delay).
+    after = what_if({"perm_absent": 1}, penalty_scale=0.35)[1]
+    assert after.spill_cost == pytest.approx(100 * 15 * 0.35)
+    assert after.temps.sum() == 0
+    with pytest.raises(ValueError):
+        what_if({"perm_absent": 2})
+
+
+def test_pack_stations_down_cut_packing():
+    # 2 stations (120/wave) -> 1 station (60/wave): 40 of the 100 spill.
+    after = what_if({"pack_stations_down": 1}, pack_cap=120)[1]
+    assert after.spilled.sum() == pytest.approx(40)
+    with pytest.raises(ValueError):
+        what_if({"pack_stations_down": 3}, pack_cap=120)
+
+
+def test_tighter_caps_keep_what_already_happened():
+    # The temp already started; a zero agency cap stops new starts but does not undo it.
+    assert what_if({"agency_daily": 0})[1].temps[1] == 1
+    # The overtime hour in wave 1 was worked; banning overtime at 02:00 keeps it.
+    after = what_if({"overtime_hours": 0}, now=2, overtime_daily=6)[1]
+    assert after.overtime[1] == pytest.approx(1)
+
+
+def test_demand_change_applies_to_arrivals_from_now():
+    demand = DEMAND.copy()
+    demand[2, 0, 0] = 50
+    before, after = what_if({"demand_change": [{"state": None, "pct": 100}]}, demand=demand)
+    assert after.demand_total - before.demand_total == pytest.approx(50)
+
+
+def test_penalty_scale_multiplies_the_current_penalty():
+    assert what_if({"penalty_scale": 0})[1].spill_cost == 0
+
+
 needs_olist = pytest.mark.skipif(not (data.RAW / "olist_orders_dataset.csv").exists(),
                                  reason="Olist CSVs not in data/raw")
 
@@ -196,6 +270,18 @@ def test_frontier_on_black_friday():
     assert all(b >= a - 1e-6 for a, b in zip(labour, labour[1:]))
     assert spill[0] == pytest.approx(model.solve(demand, vals, base, max_temps=0).spill_cost)
     assert plans[-1].total_cost == pytest.approx(plan.lower_bound)
+
+
+@needs_olist
+def test_truck_delay_never_costs_more_on_black_friday():
+    # A later truck only gives the floor more time. Measured against targets from the delayed
+    # schedule, orders newly able to reach it counted as late (spill 1,144 -> 1,343).
+    demand, vals, base = black_friday()
+    plan = model.solve(demand, vals, base)
+    before, after = model.what_if(demand, vals, base, plan, 14,
+                                  {"truck_delay": [{"state": "RJ", "minutes": 45}]})
+    assert after.total_cost <= before.total_cost + 1e-6
+    assert after.spilled.sum() <= before.spilled.sum() + 1e-6
 
 
 def test_truck_schedule():
