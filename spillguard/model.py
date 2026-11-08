@@ -42,10 +42,20 @@ def departures(state, hours):
 
 
 def shift_cost(start):
-    """R$ cost of one temp shift starting at window hour `start`, with the night premium."""
+    """R$ cost of one temp shift starting at window hour `start`: pay, supervision and a share
+    of induction, all with the night premium (supervisors and induction run on the same hours).
+
+    ponytail: supervision is 1/SUPERVISOR_SPAN of a supervisor per temp-hour, linear; whole
+    supervisors in steps of SPAN would need integer variables and slow the solve.
+    """
     night = sum((start + k) % 24 in NIGHT_HOURS for k in range(cfg.SHIFT_HOURS))
-    day_rate = cfg.TEMP_MONTHLY_WAGE / cfg.WORKDAYS_PER_MONTH * cfg.EMPLOYER_COST_MULT
-    return day_rate * (1 + cfg.NIGHT_PREMIUM * night / cfg.SHIFT_HOURS)
+    temp_hour = (cfg.TEMP_MONTHLY_WAGE / cfg.WORKDAYS_PER_MONTH * cfg.EMPLOYER_COST_MULT
+                 / cfg.SHIFT_HOURS)
+    supervisor_hour = (cfg.SUPERVISOR_MONTHLY_WAGE / cfg.CLT_MONTHLY_HOURS * cfg.PERM_COST_MULT
+                       / cfg.SUPERVISOR_SPAN)
+    shift = ((temp_hour + supervisor_hour) * cfg.SHIFT_HOURS
+             + temp_hour * cfg.ONBOARDING_HOURS / cfg.SHIFTS_PER_TEMP)
+    return shift * (1 + cfg.NIGHT_PREMIUM * night / cfg.SHIFT_HOURS)
 
 
 def overtime_cost(wave):

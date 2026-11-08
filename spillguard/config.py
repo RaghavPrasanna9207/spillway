@@ -59,6 +59,14 @@ PERM_COST_MULT = 1.7             # employer charges on CLT pay: 1.7-2.0x under L
                                  # (Valor Final, Cora); low end, benefits do not scale with overtime
 OVERTIME_PREMIUM = 0.50          # Constitution art. 7 XVI: at least 50% above the normal hour
 OVERTIME_MAX_H = 2               # CLT art. 59: at most 2 extra hours per person per day
+# Temp overheads on top of pay (step 6d).
+SUPERVISOR_MONTHLY_WAGE = 4981   # R$, Indeed (Shopee supervisor); CAGED via Portal Salario:
+                                 # national mean R$4,710, SP-state cities R$4,826-5,424
+SUPERVISOR_SPAN = 15             # ASSUMPTION: temps per supervisor (postings ask for 10-25+)
+ONBOARDING_HOURS = 4             # ASSUMPTION: paid induction per new temp (NR-18's 4-hour
+                                 # admission training is the nearest Brazilian rule)
+SHIFTS_PER_TEMP = 3              # ASSUMPTION: agencies book peak temps for the weekend, one
+                                 # shift per window day, so induction spreads over 3 shifts
 # Agency supply. Temps come from an agency that can only fill so many shifts a day, and
 # fewer at night. Scaled with permanent headcount like the floor cap: 30/day, 6 at night.
 AGENCY_DAILY_MULT = 7.5          # ASSUMPTION: temp shift starts per day the agency can fill

@@ -31,8 +31,8 @@ def test_no_temps_spills_the_excess():
 
 
 def test_stops_hiring_when_next_temp_costs_more_than_it_saves():
-    # Temp 1 (+40/wave, ~R$190) saves 40 x R$15 = R$600. Temp 2 would save only the last
-    # 10 orders (R$150) for ~R$190, so the optimum is one temp and 10 spilled.
+    # Temp 1 (+40/wave, ~R$244 with supervision and induction) saves 40 x R$15 = R$600. Temp 2
+    # would save only the last 10 orders (R$150), so the optimum is one temp and 10 spilled.
     plan = solve()
     assert plan.temps.sum() == 1
     assert plan.spilled.sum() == pytest.approx(10)
@@ -71,7 +71,7 @@ def test_lp_with_milp_headcount_reproduces_milp():
 
 
 def test_frontier_trades_labour_for_spill_linearly_on_hand_case():
-    # Each fractional temp in wave 1 saves 40 orders x R$15, more than its ~R$190, so the LP
+    # Each fractional temp in wave 1 saves 40 orders x R$15, more than its ~R$244, so the LP
     # optimum hires 1.25 temps and clears all 50 excess orders; spill falls linearly to it.
     plans = model.frontier(DEMAND, VALUES, base=1, points=6, **HAND)
     caps = [p.temps.sum() for p in plans]
@@ -83,7 +83,7 @@ def test_frontier_trades_labour_for_spill_linearly_on_hand_case():
 
 def test_packing_caps_picks_and_hiring():
     # Packing 60/wave: one temp would raise picking from 50 to 90 but only 10 more orders get
-    # packed (R$150 saved for ~R$190), so the optimum hires nobody and 50 spill.
+    # packed (R$150 saved for ~R$244), so the optimum hires nobody and 50 spill.
     plan = solve(pack_cap=60)
     assert plan.temps.sum() == 0
     assert plan.spilled.sum() == pytest.approx(50)
@@ -113,9 +113,18 @@ def test_marginal_roi_skips_hours_the_agency_cannot_fill():
     assert roi.net.isna().all()
 
 
+def test_overheads_can_make_a_temp_not_worth_hiring(monkeypatch):
+    # At 0.35x penalty one temp saves 40 x R$15 x 0.35 = R$210: more than its 01:00 pay
+    # (~R$190), less than pay plus supervision and induction (~R$244).
+    assert solve(penalty_scale=0.35).temps.sum() == 0
+    monkeypatch.setattr(cfg, "SUPERVISOR_SPAN", float("inf"))
+    monkeypatch.setattr(cfg, "ONBOARDING_HOURS", 0)
+    assert solve(penalty_scale=0.35).temps.sum() == 1
+
+
 def test_overtime_covers_a_short_peak_more_cheaply_than_a_temp():
     # The permanent picker staying one extra hour in wave 1 takes a slot (40/h) plus the
-    # experience gap (10/h): exactly the 50 excess orders, for ~R$29 instead of a ~R$190 shift.
+    # experience gap (10/h): exactly the 50 excess orders, for ~R$29 instead of a ~R$244 shift.
     plan = solve(overtime_daily=6)
     assert plan.temps.sum() == 0
     assert plan.overtime.sum() == pytest.approx(1)
