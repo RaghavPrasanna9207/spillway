@@ -2,6 +2,8 @@
 
 Spillway plans temporary picker staffing and wave sequencing for one fulfilment centre (FC) during a demand peak. It trades labour cost against spillage: orders that miss their picking wave and then their truck. The case is a Sao Paulo FC over Black Friday weekend 2017, built on Olist, a public Brazilian e-commerce dataset.
 
+![The app solves the staffing plan, simulates three picking policies on realised demand, then re-plans from Friday 14:00 after the Rio truck runs 45 minutes late.](docs/demo.gif)
+
 ## The problem
 
 Flipkart's engineering blog frames spillage as orders that miss processing waves and truck connections when capacity runs short, in [The Race Against the Clock: Optimizing Supply Chain Capacity for Faster Deliveries, Part 1](https://blog.flipkart.tech/the-race-against-the-clock-optimizing-supply-chain-capacity-for-faster-deliveries-part-1-01b867c400de) (April 2026). More pickers clear the backlog, at a price. Spillway answers two questions for one FC: how many temps to bring in at each hour, and which orders each wave should pick so the costly ones make their truck.
