@@ -67,3 +67,11 @@ def test_surges_apply_to_their_own_days():
     fc = data.forecast_demand(orders, peak_surge=3, weekend_surge=2, buffer=1.1)
     np.testing.assert_allclose(fc[:24], base[:24] * 3.3)
     np.testing.assert_allclose(fc[24:], base[24:] * 2.2)
+
+
+def test_committed_arrays_match_a_rebuild():
+    # The deployed app reads data/derived.npz; rebuild it (python -m spillguard.data) when
+    # data.py or config change.
+    saved = np.load(data.DERIVED)
+    for name, value in data.derived(orders).items():
+        np.testing.assert_allclose(saved[name], value, err_msg=name)

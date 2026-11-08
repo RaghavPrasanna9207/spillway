@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from spillguard import data
@@ -36,3 +37,13 @@ def test_what_if_example_applies_without_an_llm(monkeypatch):
     assert not app.exception
     assert len(app.metric) == 5 + 4  # headline row + before/after row
     assert app.info[0].value.startswith("At Fri 14:00")  # template briefing
+
+
+def test_app_runs_from_committed_arrays_without_the_csvs(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_MODEL", "")
+    with_csvs = AppTest.from_file(APP, default_timeout=120).run()
+    monkeypatch.setattr(data, "RAW", tmp_path)  # no CSVs here
+    st.cache_data.clear()  # or load() returns the CSV result
+    without = AppTest.from_file(APP, default_timeout=120).run()
+    assert not without.exception
+    assert [m.value for m in without.metric] == [m.value for m in with_csvs.metric]

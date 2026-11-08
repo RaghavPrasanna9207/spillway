@@ -11,6 +11,9 @@ import pandas as pd
 from spillguard import config as cfg
 
 RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
+# The arrays the app needs, committed so the deployed app runs without the Olist CSVs.
+# Derived from Olist, so CC BY-NC-SA 4.0 like the source. Rebuild: python -m spillguard.data
+DERIVED = RAW.parent / "derived.npz"
 S, V = len(cfg.DEST_STATES), len(cfg.TIER_NAMES)
 
 
@@ -106,6 +109,13 @@ def planning_forecast(orders, buffer=1.0):
     return forecast_demand(orders, *hindsight_surges(orders), buffer=buffer)
 
 
+def derived(orders):
+    """Demand arrays for the app: the forecast at surge 1 (sizes permanent headcount), the
+    planning forecast, realised demand, and tier values. Hourly counts at FC scale only."""
+    return dict(normal=forecast_demand(orders), planning=planning_forecast(orders),
+                actual=actual_demand(orders), tier_values=tier_values(orders))
+
+
 def wape(forecast, actual):
     """Weighted absolute percentage error of hourly totals."""
     f, a = forecast.sum((1, 2)), actual.sum((1, 2))
@@ -122,3 +132,5 @@ if __name__ == "__main__":
     print(f"hindsight surges: peak {peak:.2f}, weekend {weekend:.2f}")
     print(f"hourly WAPE at surge 1: {wape(fc, act):.0%}, "
           f"at hindsight surges: {wape(forecast_demand(o, peak, weekend), act):.0%}")
+    np.savez_compressed(DERIVED, **derived(o))
+    print(f"wrote {DERIVED}")

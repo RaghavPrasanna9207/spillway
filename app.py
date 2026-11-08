@@ -36,18 +36,16 @@ try:
 except FileNotFoundError:
     pass
 
-if not (data.RAW / "olist_orders_dataset.csv").exists():
-    st.error(f"Olist CSVs not found in {data.RAW}. Download them from "
-             "kaggle.com/datasets/olistbr/brazilian-ecommerce.")
-    st.stop()
-
-
 @st.cache_data
 def load():
-    """(permanent headcount, tier values, planning forecast at buffer 1, realised demand)."""
-    orders = data.load_orders()
-    return (model.base_headcount(data.forecast_demand(orders)), data.tier_values(orders),
-            data.planning_forecast(orders), data.actual_demand(orders))
+    """(permanent headcount, tier values, planning forecast at buffer 1, realised demand), from
+    the Olist CSVs when present, else the committed data.DERIVED arrays."""
+    if (data.RAW / "olist_orders_dataset.csv").exists():
+        arrays = data.derived(data.load_orders())
+    else:
+        arrays = dict(np.load(data.DERIVED))
+    return (model.base_headcount(arrays["normal"]), arrays["tier_values"], arrays["planning"],
+            arrays["actual"])
 
 
 BASE, TIER_VALUES, FORECAST, ACTUAL = load()
