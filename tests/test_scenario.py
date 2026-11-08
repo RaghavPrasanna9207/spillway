@@ -1,4 +1,4 @@
-from spillguard.scenario import Scenario
+from spillway.scenario import Scenario
 
 
 def test_describe_lists_each_change_and_nothing_for_no_change():

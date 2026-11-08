@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from spillguard import config as cfg
+from spillway import config as cfg
 
 State = Literal[tuple(cfg.DEST_STATES)]
 

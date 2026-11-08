@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from spillguard import config as cfg
-from spillguard import data
+from spillway import config as cfg
+from spillway import data
 
 if not (data.RAW / "olist_orders_dataset.csv").exists():
     pytest.skip("Olist CSVs not in data/raw", allow_module_level=True)
@@ -70,7 +70,7 @@ def test_surges_apply_to_their_own_days():
 
 
 def test_committed_arrays_match_a_rebuild():
-    # The deployed app reads data/derived.npz; rebuild it (python -m spillguard.data) when
+    # The deployed app reads data/derived.npz; rebuild it (python -m spillway.data) when
     # data.py or config change.
     saved = np.load(data.DERIVED)
     for name, value in data.derived(orders).items():

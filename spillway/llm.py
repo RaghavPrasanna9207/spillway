@@ -17,8 +17,8 @@ from datetime import date
 from openai import OpenAI
 from pydantic import ValidationError
 
-from spillguard import config as cfg
-from spillguard.scenario import Scenario
+from spillway import config as cfg
+from spillway.scenario import Scenario
 
 PARSE_PROMPT = f"""You turn a fulfilment-centre manager's sentence into a JSON scenario for a \
 staffing model. Reply with one JSON object and nothing else, matching this JSON schema:

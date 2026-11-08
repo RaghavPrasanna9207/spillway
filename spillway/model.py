@@ -16,8 +16,8 @@ import numpy as np
 import pandas as pd
 from ortools.linear_solver import pywraplp
 
-from spillguard import config as cfg
-from spillguard.scenario import Scenario
+from spillway import config as cfg
+from spillway.scenario import Scenario
 
 # ponytail: orders still queued LOOKAHEAD waves after their last arrival go to a backlog at
 # a flat delay; raise it if backlog shows up in results.

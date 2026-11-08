@@ -8,8 +8,8 @@ every policy sees the same demand and staffing for a given seed.
 """
 import numpy as np
 
-from spillguard import config as cfg
-from spillguard import model
+from spillway import config as cfg
+from spillway import model
 
 POLICIES = ("fifo", "earliest_truck", "replan")
 

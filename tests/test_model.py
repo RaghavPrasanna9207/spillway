@@ -3,9 +3,9 @@ import time
 import numpy as np
 import pytest
 
-from spillguard import config as cfg
-from spillguard import data, model
-from spillguard.scenario import Scenario
+from spillway import config as cfg
+from spillway import data, model
+from spillway.scenario import Scenario
 
 # Hand-sized case: 1 state, 1 tier, 100 orders arriving in hour 0, one permanent picker
 # (50/wave). Trucks at hours 3 and 27. Wave 1 is the earliest wave and catches the 03:00

@@ -1,10 +1,10 @@
-# SpillGuard
+# Spillway
 
-SpillGuard plans temporary picker staffing and wave sequencing for one fulfilment centre (FC) during a demand peak. It trades labour cost against spillage: orders that miss their picking wave and then their truck. The case is a Sao Paulo FC over Black Friday weekend 2017, built on Olist, a public Brazilian e-commerce dataset.
+Spillway plans temporary picker staffing and wave sequencing for one fulfilment centre (FC) during a demand peak. It trades labour cost against spillage: orders that miss their picking wave and then their truck. The case is a Sao Paulo FC over Black Friday weekend 2017, built on Olist, a public Brazilian e-commerce dataset.
 
 ## The problem
 
-Flipkart's engineering blog frames spillage as orders that miss processing waves and truck connections when capacity runs short, in [The Race Against the Clock: Optimizing Supply Chain Capacity for Faster Deliveries, Part 1](https://blog.flipkart.tech/the-race-against-the-clock-optimizing-supply-chain-capacity-for-faster-deliveries-part-1-01b867c400de) (April 2026). More pickers clear the backlog, at a price. SpillGuard answers two questions for one FC: how many temps to bring in at each hour, and which orders each wave should pick so the costly ones make their truck.
+Flipkart's engineering blog frames spillage as orders that miss processing waves and truck connections when capacity runs short, in [The Race Against the Clock: Optimizing Supply Chain Capacity for Faster Deliveries, Part 1](https://blog.flipkart.tech/the-race-against-the-clock-optimizing-supply-chain-capacity-for-faster-deliveries-part-1-01b867c400de) (April 2026). More pickers clear the backlog, at a price. Spillway answers two questions for one FC: how many temps to bring in at each hour, and which orders each wave should pick so the costly ones make their truck.
 
 Flipkart describes the planning platform behind its capacity, inventory and network flow decisions in its 2025 Franz Edelman Award finalist paper: Agarwal, S., Agrawal, P., et al. (2026). Faster, Smarter, Leaner: How Flipkart Optimized Its Supply Chain to Unlock Growth. *INFORMS Journal on Applied Analytics* 56(1):42-57. [doi:10.1287/inte.2025.0282](https://doi.org/10.1287/inte.2025.0282)
 
@@ -45,7 +45,7 @@ Per wave it enforces:
 
 Permanent headcount covers a normal day's busiest hour. The floor and the pack line are sized so a full floor covers the design peak day's average hour (20,000 / 24).
 
-Exact branch-and-bound took 20 to 60+ seconds per day on CBC, SCIP and HiGHS. SpillGuard solves the LP relaxation on GLOP instead, rounds temps up, trims them back under the floor and agency caps, then adds or removes single temps while total cost falls. `Plan.gap` reports the distance to the LP bound: R$58 (0.3%) at default settings, in about half a second.
+Exact branch-and-bound took 20 to 60+ seconds per day on CBC, SCIP and HiGHS. Spillway solves the LP relaxation on GLOP instead, rounds temps up, trims them back under the floor and agency caps, then adds or removes single temps while total cost falls. `Plan.gap` reports the distance to the LP bound: R$58 (0.3%) at default settings, in about half a second.
 
 With temps fixed the same LP re-plans wave assignment and overtime. The simulation's rolling re-plan and the app's what-ifs both use it.
 
@@ -88,7 +88,7 @@ The app's what-if box takes a sentence such as "Rio truck 45 minutes late and tw
 - agency and overtime caps
 - a penalty multiplier
 
-The parsed change is shown for confirmation. SpillGuard then re-plans from the chosen hour with shifts that already started kept, and shows before and after figures.
+The parsed change is shown for confirmation. Spillway then re-plans from the chosen hour with shifts that already started kept, and shows before and after figures.
 
 The LLM never produces numbers. Its scenario is validated against a strict schema, and its briefing is rejected if it states a digit the solver did not supply, in which case a template briefing replaces it. The app works with no LLM configured, using four pre-parsed examples. A daily cap of 200 calls protects a shared key.
 
@@ -126,7 +126,7 @@ py -3.12 -m venv .venv
 .venv/Scripts/python -m pytest -q
 ```
 
-The app runs from `data/derived.npz`, the demand arrays it needs at FC scale. To rebuild them, put the orders, customers, order_items and sellers CSVs from [Olist on Kaggle](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) in `data/raw/` and run `.venv/Scripts/python -m spillguard.data`. With the CSVs present, the app and the data tests use them directly.
+The app runs from `data/derived.npz`, the demand arrays it needs at FC scale. To rebuild them, put the orders, customers, order_items and sellers CSVs from [Olist on Kaggle](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) in `data/raw/` and run `.venv/Scripts/python -m spillway.data`. With the CSVs present, the app and the data tests use them directly.
 
 To type your own what-ifs, set `LLM_MODEL` and `LLM_API_KEY` (and `LLM_BASE_URL` for a non-NIM endpoint) in `.streamlit/secrets.toml`. Live LLM tests run only when `LLM_MODEL` is set in the environment.
 

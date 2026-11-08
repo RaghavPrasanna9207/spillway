@@ -7,9 +7,9 @@ from datetime import date, timedelta
 
 import pytest
 
-from spillguard import config as cfg
-from spillguard import llm
-from spillguard.scenario import Scenario
+from spillway import config as cfg
+from spillway import llm
+from spillway.scenario import Scenario
 
 CASES = [
     ("The Rio truck is running 45 minutes late", {"truck_delay": [{"state": "RJ", "minutes": 45}]}),

@@ -1,4 +1,4 @@
-"""Every assumption in SpillGuard. Sources are cited inline; ASSUMPTION marks a value with no source."""
+"""Every assumption in Spillway. Sources are cited inline; ASSUMPTION marks a value with no source."""
 
 # --- Scope -------------------------------------------------------------------
 FC_STATE = "SP"                  # one FC, shipping only Sao Paulo-state sellers' orders

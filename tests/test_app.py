@@ -4,7 +4,7 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from spillguard import data
+from spillway import data
 
 pytestmark = pytest.mark.skipif(not (data.RAW / "olist_orders_dataset.csv").exists(),
                                 reason="Olist CSVs not in data/raw")

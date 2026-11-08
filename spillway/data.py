@@ -8,11 +8,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from spillguard import config as cfg
+from spillway import config as cfg
 
 RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
 # The arrays the app needs, committed so the deployed app runs without the Olist CSVs.
-# Derived from Olist, so CC BY-NC-SA 4.0 like the source. Rebuild: python -m spillguard.data
+# Derived from Olist, so CC BY-NC-SA 4.0 like the source. Rebuild: python -m spillway.data
 DERIVED = RAW.parent / "derived.npz"
 S, V = len(cfg.DEST_STATES), len(cfg.TIER_NAMES)
 

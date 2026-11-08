@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from spillguard import data, model, sim
+from spillway import data, model, sim
 
 VALUES = [100.0]  # R$15 per order per day late, as in test_model
 

@@ -1,4 +1,4 @@
-"""SpillGuard: temp picker staffing and wave sequencing for one Sao Paulo FC over Black Friday
+"""Spillway: temp picker staffing and wave sequencing for one Sao Paulo FC over Black Friday
 weekend 2017. Run with `streamlit run app.py`."""
 import math
 import os
@@ -9,11 +9,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from spillguard import config as cfg
-from spillguard import data, llm, model, sim
-from spillguard.scenario import Scenario
+from spillway import config as cfg
+from spillway import data, llm, model, sim
+from spillway.scenario import Scenario
 
-st.set_page_config(page_title="SpillGuard", layout="wide")
+st.set_page_config(page_title="Spillway", layout="wide")
 START = pd.Timestamp(cfg.WINDOW_START)
 POLICY_NAMES = {"fifo": "FIFO", "earliest_truck": "Earliest truck first",
                 "replan": "Rolling re-plan"}
@@ -182,7 +182,7 @@ plan, front, roi = scenario(buffer, penalty, limits)
 fc = FORECAST * buffer
 
 # --- Headline ----------------------------------------------------------------
-st.title("SpillGuard")
+st.title("Spillway")
 st.caption("Temp pickers and wave sequencing for one Sao Paulo fulfilment centre over Black "
            "Friday weekend 2017 (Olist orders scaled to a 20k-order peak day). Spilled orders "
            "miss their truck and roll into later waves.")
