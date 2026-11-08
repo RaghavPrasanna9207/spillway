@@ -91,3 +91,5 @@ CANCEL_PROB_PER_DAY_LATE = 0.05   # ASSUMPTION: chance a late order is cancelled
 
 # --- LLM ---------------------------------------------------------------------
 LLM_DAILY_CALL_CAP = 200
+LLM_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"  # NVIDIA NIM, OpenAI-compatible
+LLM_TIMEOUT_S = 30               # seconds per call before the app gives up on the LLM
