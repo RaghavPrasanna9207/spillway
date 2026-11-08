@@ -1,8 +1,8 @@
 """SpillGuard: temp picker staffing and wave sequencing for one Sao Paulo FC over Black Friday
 weekend 2017. Run with `streamlit run app.py`."""
-import json
 import math
 import os
+from dataclasses import dataclass
 
 import altair as alt
 import numpy as np
@@ -11,13 +11,14 @@ import streamlit as st
 
 from spillguard import config as cfg
 from spillguard import data, llm, model, sim
+from spillguard.scenario import Scenario
 
 st.set_page_config(page_title="SpillGuard", layout="wide")
 START = pd.Timestamp(cfg.WINDOW_START)
 POLICY_NAMES = {"fifo": "FIFO", "earliest_truck": "Earliest truck first",
                 "replan": "Rolling re-plan"}
 # Pre-parsed what-ifs: used when no LLM is configured or today's call cap is used up.
-EXAMPLES = {sentence: llm.Scenario(**change).model_dump() for sentence, change in [
+EXAMPLES = {sentence: Scenario(**change) for sentence, change in [
     ("The Rio truck is running 45 minutes late",
      {"truck_delay": [{"state": "RJ", "minutes": 45}]}),
     ("Three temps didn't show up and two pack stations are down",
@@ -28,13 +29,25 @@ EXAMPLES = {sentence: llm.Scenario(**change).model_dump() for sentence, change i
      {"overtime_hours": 0, "agency_daily": 20}),
 ]}
 
-# LLM settings from .streamlit/secrets.toml (local or Streamlit Cloud); environment otherwise.
-try:
-    for k in ("LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY"):
-        if k in st.secrets:
-            os.environ.setdefault(k, str(st.secrets[k]))
-except FileNotFoundError:
-    pass
+
+@st.cache_resource
+def chat_for(config):
+    return llm.chat_with(config)
+
+
+def llm_config():
+    """LLM_* settings from .streamlit/secrets.toml (local or Streamlit Cloud) over the
+    environment; None runs the app without an LLM."""
+    try:
+        secrets = dict(st.secrets)
+    except FileNotFoundError:
+        secrets = {}
+    return llm.LLMConfig.from_settings({**os.environ, **secrets})
+
+
+LLM = llm_config()
+CHAT = LLM and chat_for(LLM)
+
 
 @st.cache_data
 def load():
@@ -51,21 +64,24 @@ def load():
 BASE, TIER_VALUES, FORECAST, ACTUAL = load()
 
 
+def instance(buffer, penalty, limits):
+    # FORECAST x buffer is data.planning_forecast(orders, buffer)
+    return model.Instance(FORECAST * buffer, TIER_VALUES, BASE, penalty, limits)
+
+
 @st.cache_data(show_spinner="Solving the staffing plan...")
 def scenario(buffer, penalty, limits):
     """(plan, frontier, marginal ROI) for one slider setting; about 4 s uncached."""
-    fc = FORECAST * buffer  # same as data.planning_forecast(orders, buffer)
-    plan = model.solve(fc, TIER_VALUES, BASE, penalty_scale=penalty, **limits)
-    front = model.frontier(fc, TIER_VALUES, BASE, penalty_scale=penalty, **limits)
-    roi = model.marginal_roi(fc, TIER_VALUES, BASE, plan.temps, penalty_scale=penalty, **limits)
-    return plan, front, roi
+    problem = instance(buffer, penalty, limits)
+    plan = model.solve(problem)
+    return plan, model.frontier(problem), model.marginal_roi(problem, plan.temps)
 
 
 @st.cache_data(show_spinner=False)
 def compare(buffer, penalty, limits, runs):
     plan = scenario(buffer, penalty, limits)[0]
-    return sim.compare(FORECAST * buffer, ACTUAL, TIER_VALUES, BASE, plan.temps, runs=runs,
-                       penalty_scale=penalty, overtime=plan.overtime, **limits)
+    return sim.compare(instance(buffer, penalty, limits), ACTUAL, plan.temps, runs=runs,
+                       overtime=plan.overtime)
 
 
 @st.cache_data(show_spinner="Re-planning from now...")
@@ -73,8 +89,8 @@ def what_if(buffer, penalty, limits, now, change_json):
     """(before, after) plans from hour `now`; raises ValueError for a change the plan cannot
     absorb."""
     plan = scenario(buffer, penalty, limits)[0]
-    return model.what_if(FORECAST * buffer, TIER_VALUES, BASE, plan, now,
-                         json.loads(change_json), penalty_scale=penalty, **limits)
+    return model.what_if(instance(buffer, penalty, limits), plan, now,
+                         Scenario.model_validate_json(change_json))
 
 
 def at(hours):
@@ -94,64 +110,42 @@ def md(text):
     return text.replace("$", r"\$")
 
 
-def describe(change):
-    """One line per change in a scenario dict; empty when nothing changes."""
-    lines = [f"Demand {'in all states' if c['state'] is None else 'to ' + c['state']}: "
-             f"{c['pct']:+g}% from now" for c in change["demand_change"]]
-    lines += [f"Next {c['state']} truck leaves {c['minutes']:g} min late"
-              for c in change["truck_delay"]]
-    for field, label in [("temp_no_shows", "Temps on shift who did not turn up"),
-                         ("pack_stations_down", "Pack stations out of service"),
-                         ("perm_absent", "Permanent pickers absent until midnight")]:
-        if change[field]:
-            lines.append(f"{label}: {change[field]}")
-    if change["agency_daily"] is not None:
-        lines.append(f"Agency fills at most {change['agency_daily']} temp shifts a day")
-    if change["overtime_hours"] is not None:
-        lines.append(f"Overtime limited to {change['overtime_hours']:g} h per permanent picker "
-                     "a day")
-    if change["penalty_scale"] is not None:
-        lines.append(f"Late orders cost {change['penalty_scale']:g}x the current penalty")
-    return lines
+@dataclass
+class WhatIfFacts:
+    """A what-if result formatted once: the only numbers its briefing may use, either as
+    labelled facts for the LLM or in the template sentence."""
+    sentence: str
+    now: str
+    temps: str
+    starts: str
+    labour: str
+    missed: str
+    spill_cost: str
 
+    @classmethod
+    def of(cls, sentence, now, before, after):
+        added = after.temps - before.temps
+        starts = [f"{at(t):%a %H:%M} ({added[t]:+.0f})" for t in np.flatnonzero(added)]
+        return cls(sentence, f"{at(now):%a %H:%M}",
+                   f"{before.temps.sum():.0f} -> {after.temps.sum():.0f}",
+                   ", ".join(starts) or "none",
+                   f"{brl(before.labour_cost)} -> {brl(after.labour_cost)}",
+                   f"{before.spilled.sum():,.0f} -> {after.spilled.sum():,.0f}",
+                   f"{brl(before.spill_cost)} -> {brl(after.spill_cost)}")
 
-def briefing_facts(sentence, now, before, after):
-    """Solver results as labelled strings: the only numbers a briefing may use."""
-    added = after.temps - before.temps
-    starts = [f"{at(t):%a %H:%M} ({added[t]:+.0f})" for t in np.flatnonzero(added)]
-    return {
-        "What changed": sentence,
-        "Time now": f"{at(now):%a %H:%M}",
-        "Temp shifts, before -> after": f"{before.temps.sum():.0f} -> {after.temps.sum():.0f}",
-        "Shift starts that change": ", ".join(starts) or "none",
-        "Labour cost, before -> after": f"{brl(before.labour_cost)} -> {brl(after.labour_cost)}",
-        "Orders missing their truck from now, before -> after":
-            f"{before.spilled.sum():,.0f} -> {after.spilled.sum():,.0f}",
-        "Spill cost from now, before -> after":
-            f"{brl(before.spill_cost)} -> {brl(after.spill_cost)}",
-    }
+    def labelled(self):
+        return {"What changed": self.sentence, "Time now": self.now,
+                "Temp shifts, before -> after": self.temps,
+                "Shift starts that change": self.starts,
+                "Labour cost, before -> after": self.labour,
+                "Orders missing their truck from now, before -> after": self.missed,
+                "Spill cost from now, before -> after": self.spill_cost}
 
-
-def template_briefing(f):
-    return (f"At {f['Time now']}, after \"{f['What changed']}\", temp shifts go "
-            f"{f['Temp shifts, before -> after']} and labour cost "
-            f"{f['Labour cost, before -> after']}. Orders missing their truck from now go "
-            f"{f['Orders missing their truck from now, before -> after']}, with spill cost "
-            f"{f['Spill cost from now, before -> after']}. Shift starts that change: "
-            f"{f['Shift starts that change']}.")
-
-
-def write_briefing(facts):
-    """(briefing, where it came from). Falls back to the template on any LLM failure."""
-    if not llm.configured():
-        return template_briefing(facts), "Template briefing: no LLM configured."
-    try:
-        return llm.briefing(facts), f"Written by {os.environ['LLM_MODEL']} from the numbers above."
-    except llm.CapReached:
-        reason = "today's LLM limit is used up"
-    except Exception as e:  # network, auth, or a briefing with invented numbers
-        reason = f"the LLM failed ({e})"
-    return template_briefing(facts), f"Template briefing: {reason}."
+    def template(self):
+        return (f'At {self.now}, after "{self.sentence}", temp shifts go {self.temps} and '
+                f"labour cost {self.labour}. Orders missing their truck from now go "
+                f"{self.missed}, with spill cost {self.spill_cost}. Shift starts that change: "
+                f"{self.starts}.")
 
 
 # --- Sidebar -----------------------------------------------------------------
@@ -307,12 +301,12 @@ now = st.select_slider("Now", options=list(range(1, len(fc))), value=14, key="no
                        format_func=lambda h: f"{at(h):%a %H:%M}")
 st.caption("Shifts starting at or before now stay as planned; later shifts, overtime and wave "
            "order are re-planned. Missed trucks and spill cost count from now.")
-if llm.configured():
+if CHAT:
     typed = st.text_input("What changed?", key="sentence",
                           placeholder="e.g. Rio truck 45 min late and two pickers off sick")
     if st.button("Read it", key="parse", disabled=not typed):
         try:
-            st.session_state.change = (typed, llm.parse(typed).model_dump())
+            st.session_state.change = (typed, llm.parse(typed, CHAT))
         except llm.CapReached:
             st.warning("Today's LLM limit is used up; pick an example instead.")
         except Exception as e:  # network, auth, or a reply that is not a valid scenario
@@ -326,18 +320,21 @@ if st.button("Use example", key="use_example"):
 
 if "change" in st.session_state:
     sentence, change = st.session_state.change
-    lines = describe(change)
+    lines = change.describe()
     st.markdown(md(f"**{sentence}**\n\n" + ("\n".join(f"- {x}" for x in lines)
                                             or "Nothing in that sentence changes the plan.")))
-    wkey = (buffer, penalty, tuple(limits.items()), now, json.dumps(change))
+    wkey = (buffer, penalty, tuple(limits.items()), now, change.model_dump_json())
     if st.button("Apply", key="apply", disabled=not lines):
         try:
-            before, after = what_if(buffer, penalty, limits, now, json.dumps(change))
+            before, after = what_if(buffer, penalty, limits, now, change.model_dump_json())
         except ValueError as e:
             st.error(str(e))
         else:
-            facts = briefing_facts(sentence, now, before, after)
-            st.session_state.result = (wkey, before, after, *write_briefing(facts))
+            facts = WhatIfFacts.of(sentence, now, before, after)
+            text, why = llm.briefing_or(facts.template(), facts.labelled(), CHAT)
+            source = (f"Written by {LLM.model} from the numbers above." if why is None
+                      else f"Template briefing: {why}.")
+            st.session_state.result = (wkey, before, after, text, source)
     if st.session_state.get("result", (None,))[0] == wkey:
         _, before, after, text, source = st.session_state.result
         cols = st.columns(4)

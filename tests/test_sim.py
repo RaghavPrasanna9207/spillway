@@ -6,9 +6,14 @@ from spillguard import data, model, sim
 VALUES = [100.0]  # R$15 per order per day late, as in test_model
 
 
-def run(demand, deps, policy, temps=None, **kw):
+def instance(demand, deps, **limits):
+    return model.Instance(demand, VALUES, 1, limits=limits, deps=deps)
+
+
+def run(demand, deps, policy, temps=None, overtime=None, **limits):
     temps = np.zeros(len(demand)) if temps is None else temps
-    return sim.run(demand, demand, VALUES, 1, temps, policy, noise=False, deps=deps, **kw)
+    return sim.run(instance(demand, deps, **limits), demand, temps, policy, noise=False,
+                   overtime=overtime)
 
 
 def test_spill_accounting_matches_lp():
@@ -18,7 +23,7 @@ def test_spill_accounting_matches_lp():
     demand[0, 0, 0] = 100
     deps = [np.array([3.0, 27.0, 51.0, 75.0, 99.0, 123.0])]
     temps = np.array([0, 1, 0, 0])
-    lp = model.solve(demand, VALUES, 1, deps=deps, fixed_temps=temps, overtime_daily=0)
+    lp = model.solve(instance(demand, deps, overtime_daily=0), fixed_temps=temps)
     for policy in sim.POLICIES:
         plan = run(demand, deps, policy, temps, overtime_daily=0)
         assert plan.spilled.sum() == pytest.approx(10)
@@ -30,8 +35,7 @@ def test_packing_caps_simulated_picks():
     demand[0, 0, 0] = 100
     deps = [np.array([3.0, 27.0, 51.0, 75.0, 99.0, 123.0])]
     temps = np.array([0, 1, 0, 0])  # picking 90 in wave 1, packing only 60
-    lp = model.solve(demand, VALUES, 1, deps=deps, fixed_temps=temps, pack_cap=60,
-                     overtime_daily=0)
+    lp = model.solve(instance(demand, deps, pack_cap=60, overtime_daily=0), fixed_temps=temps)
     for policy in sim.POLICIES:
         plan = run(demand, deps, policy, temps, pack_cap=60, overtime_daily=0)
         assert plan.spilled.sum() == pytest.approx(40)
@@ -43,7 +47,7 @@ def test_sim_uses_planned_overtime():
     demand = np.zeros((4, 1, 1))
     demand[0, 0, 0] = 100
     deps = [np.array([3.0, 27.0, 51.0, 75.0, 99.0, 123.0])]
-    plan = model.solve(demand, VALUES, 1, deps=deps, max_temps=0)
+    plan = model.solve(instance(demand, deps), max_temps=0)
     assert plan.overtime.sum() == pytest.approx(1)
     for policy in sim.POLICIES:
         out = run(demand, deps, policy, plan.temps, overtime=plan.overtime)
@@ -58,14 +62,14 @@ def test_replan_keeps_a_picker_late_when_demand_beats_the_forecast():
     actual[0, 0, 0] = 100
     forecast = actual / 2
     deps = [np.array([3.0, 27.0, 51.0, 75.0, 99.0, 123.0])]
-    args = (forecast, actual, VALUES, 1, np.zeros(4))
-    late = sim.run(*args, "replan", noise=False, deps=deps)
+    args = (instance(forecast, deps), actual, np.zeros(4))
+    late = sim.run(*args, "replan", noise=False)
     assert late.spilled.sum() == pytest.approx(0)
     assert late.overtime.sum() == pytest.approx(1)
     assert late.labour_cost == pytest.approx(model.overtime_cost(1))
-    fixed = sim.run(*args, "replan", noise=False, deps=deps, same_day_overtime=False)
+    fixed = sim.run(*args, "replan", noise=False, same_day_overtime=False)
     assert fixed.spilled.sum() == pytest.approx(50)
-    assert sim.run(*args, "earliest_truck", noise=False, deps=deps).spilled.sum() == pytest.approx(50)
+    assert sim.run(*args, "earliest_truck", noise=False).spilled.sum() == pytest.approx(50)
 
 
 def test_persistent_replan_matches_rebuilding_the_lp(monkeypatch):
@@ -76,8 +80,8 @@ def test_persistent_replan_matches_rebuilding_the_lp(monkeypatch):
     forecast = np.random.default_rng(0).uniform(100, 200, (6, 1, 1))
     deps = [np.array([3.0, 27.0, 51.0, 75.0, 99.0, 123.0])]
     temps = np.array([0, 1, 0, 0, 0, 1])  # one night start, within the 1.5 night cap
-    args = (forecast, 0.7 * forecast, VALUES, 1, temps, "replan")
-    persistent = sim.run(*args, noise=False, deps=deps, replan_every=1)
+    args = (instance(forecast, deps), 0.7 * forecast, temps, "replan")
+    persistent = sim.run(*args, noise=False, replan_every=1)
     init = model.Replanner.__init__
 
     def rebuild_every_call(self, *a, **k):
@@ -85,7 +89,7 @@ def test_persistent_replan_matches_rebuilding_the_lp(monkeypatch):
         self.lp.arrive = {}  # no arrival rows: every call takes the rebuild path
 
     monkeypatch.setattr(model.Replanner, "__init__", rebuild_every_call)
-    rebuilt = sim.run(*args, noise=False, deps=deps, replan_every=1)
+    rebuilt = sim.run(*args, noise=False, replan_every=1)
     assert persistent.spill_cost + persistent.labour_cost == pytest.approx(
         rebuilt.spill_cost + rebuilt.labour_cost)
 
@@ -107,12 +111,12 @@ def test_replan_reproduces_lp_on_black_friday():
     orders = data.load_orders()
     base = model.base_headcount(data.forecast_demand(orders))
     actual, vals = data.actual_demand(orders), data.tier_values(orders)
-    plan = model.solve(actual, vals, base)
+    problem = model.Instance(actual, vals, base)
+    plan = model.solve(problem)
     # Noise off and a perfect forecast: re-planning must land on the day-before plan's cost.
-    replan = sim.run(actual, actual, vals, base, plan.temps, "replan", noise=False,
-                     overtime=plan.overtime)
+    replan = sim.run(problem, actual, plan.temps, "replan", noise=False, overtime=plan.overtime)
     assert replan.spill_cost == pytest.approx(plan.spill_cost, rel=0.01)
     # With noise, every policy sees the same draws for a seed.
-    a, b = (sim.run(actual, actual, vals, base, plan.temps, p, seed=3)
+    a, b = (sim.run(problem, actual, plan.temps, p, seed=3)
             for p in ("fifo", "earliest_truck"))
     assert a.demand_total == b.demand_total

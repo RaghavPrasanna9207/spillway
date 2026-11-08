@@ -5,6 +5,7 @@ import pytest
 
 from spillguard import config as cfg
 from spillguard import data, model
+from spillguard.scenario import Scenario
 
 # Hand-sized case: 1 state, 1 tier, 100 orders arriving in hour 0, one permanent picker
 # (50/wave). Trucks at hours 3 and 27. Wave 1 is the earliest wave and catches the 03:00
@@ -17,11 +18,15 @@ VALUES = [100.0]  # R$ per order -> 10 + 100 x 0.05 = R$15 per day late
 
 # All four hand-case start hours are night hours and base=1 gives a 1.5 night cap, and the
 # hand case is about temps, so agency caps and overtime are off here unless a test sets them.
-HAND = dict(deps=DEPS, agency_daily=99, agency_night=99, overtime_daily=0)
+HAND = dict(agency_daily=99, agency_night=99, overtime_daily=0)
 
 
-def solve(**kw):
-    return model.solve(DEMAND, VALUES, base=1, **{**HAND, **kw})
+def inst(demand=DEMAND, penalty_scale=1.0, **limits):
+    return model.Instance(demand, VALUES, 1, penalty_scale, {**HAND, **limits}, deps=DEPS)
+
+
+def solve(max_temps=None, fixed_temps=None, **kw):
+    return model.solve(inst(**kw), max_temps=max_temps, fixed_temps=fixed_temps)
 
 
 def test_no_temps_spills_the_excess():
@@ -73,7 +78,7 @@ def test_lp_with_milp_headcount_reproduces_milp():
 def test_frontier_trades_labour_for_spill_linearly_on_hand_case():
     # Each fractional temp in wave 1 saves 40 orders x R$15, more than its ~R$244, so the LP
     # optimum hires 1.25 temps and clears all 50 excess orders; spill falls linearly to it.
-    plans = model.frontier(DEMAND, VALUES, base=1, points=6, **HAND)
+    plans = model.frontier(inst(), points=6)
     caps = [p.temps.sum() for p in plans]
     assert caps == pytest.approx([0, 0.25, 0.5, 0.75, 1, 1.25])
     for cap, p in zip(caps, plans):
@@ -92,7 +97,7 @@ def test_packing_caps_picks_and_hiring():
 
 def test_extra_temps_save_nothing_when_packing_binds():
     # One temp already lifts picking to 90 = packing capacity: a second one adds nothing.
-    roi = model.marginal_roi(DEMAND, VALUES, 1, [0, 1, 0, 0], pack_cap=90, **HAND)
+    roi = model.marginal_roi(inst(pack_cap=90), [0, 1, 0, 0])
     assert list(roi.spill_avoided) == pytest.approx([0, 0, 0, 0])
 
 
@@ -109,7 +114,7 @@ def test_rounding_up_respects_agency_cap():
 
 
 def test_marginal_roi_skips_hours_the_agency_cannot_fill():
-    roi = model.marginal_roi(DEMAND, VALUES, 1, [0, 1, 0, 0], **{**HAND, "agency_night": 1})
+    roi = model.marginal_roi(inst(agency_night=1), [0, 1, 0, 0])
     assert roi.net.isna().all()
 
 
@@ -138,18 +143,24 @@ def test_overtime_daily_cap_limits_it():
     assert plan.spilled.sum() == pytest.approx(25)
 
 
-def test_solve_keeps_pinned_start_hours():
-    # The 2x penalty wants 2 temps; hour 1 is pinned at 0, so both start at hour 0.
-    plan = solve(penalty_scale=2, fixed_temps=[np.nan, 0, np.nan, np.nan])
-    assert plan.temps[1] == 0
+def test_solve_treats_the_past_as_fixed():
+    # Re-planning from hour 0: new temps start from hour 1, and the 2x penalty still wants two
+    # of them for wave 1.
+    plan = model.solve(inst(penalty_scale=2), past=model.Past(0, np.zeros(4), np.zeros(40)))
+    assert plan.temps[0] == 0
     assert plan.temps.sum() == 2
+    # A temp who started at hour 1 stays, fills the 2-picker floor and counts as labour.
+    past = model.Past(1, np.array([0, 1, 0, 0]), np.zeros(40))
+    plan = model.solve(inst(penalty_scale=2, floor_cap=2, crowding=1), past=past)
+    assert list(plan.temps) == [0, 1, 0, 0]
+    assert plan.labour_cost == pytest.approx(model.shift_cost(1))
 
 
 # What-ifs at 01:00 on the hand case. The day-before plan has one temp on shift for wave 1
 # (90 picked, 10 spilled); wave 1 has not run yet, so all 100 orders are waiting.
 def what_if(change=None, now=1, demand=DEMAND, **kw):
-    plan = model.solve(demand, VALUES, base=1, **{**HAND, **kw})
-    return model.what_if(demand, VALUES, 1, plan, now, change, **{**HAND, **kw})
+    problem = inst(demand, **kw)
+    return model.what_if(problem, model.solve(problem), now, change and Scenario(**change))
 
 
 def test_what_if_without_change_repeats_the_plan():
@@ -162,6 +173,8 @@ def test_truck_delay_lets_a_later_wave_catch_the_truck():
     # 03:00 -> 04:00: waves 1 and 2 both make it, 140 capacity for 100 orders.
     after = what_if({"truck_delay": [{"state": "SP", "minutes": 60}]})[1]
     assert after.spilled.sum() == pytest.approx(0)
+    with pytest.raises(ValueError, match="pass"):  # 24 h would reach the 27:00 truck
+        what_if({"truck_delay": [{"state": "SP", "minutes": 24 * 60}]})
 
 
 def test_no_show_removes_the_temp_on_shift():
@@ -216,18 +229,18 @@ needs_olist = pytest.mark.skipif(not (data.RAW / "olist_orders_dataset.csv").exi
                                  reason="Olist CSVs not in data/raw")
 
 
-def black_friday():
+def black_friday(**limits):
     orders = data.load_orders()
     base = model.base_headcount(data.forecast_demand(orders))
-    demand = data.planning_forecast(orders)
-    return demand, data.tier_values(orders), base
+    return model.Instance(data.planning_forecast(orders), data.tier_values(orders), base,
+                          limits=limits)
 
 
 def test_marginal_roi_on_hand_case():
     # One temp covering wave 1 (start 0 or 1) gets 40 more orders onto the 03:00 truck:
     # 40 x R$15 = R$600. Later starts miss that truck, and everything waiting already
     # catches the next one, so they save nothing.
-    roi = model.marginal_roi(DEMAND, VALUES, 1, np.zeros(4), **HAND)
+    roi = model.marginal_roi(inst(), np.zeros(4))
     assert list(roi.spill_avoided) == pytest.approx([600, 600, 0, 0])
     assert list(roi.orders_saved) == pytest.approx([40, 40, 0, 0])
     assert roi.net[1] == pytest.approx(600 - model.shift_cost(1))
@@ -235,8 +248,7 @@ def test_marginal_roi_on_hand_case():
 
 def test_marginal_roi_skips_hours_with_a_full_floor():
     # A 2-picker floor with one temp already on shift: every start overlaps a full wave.
-    roi = model.marginal_roi(DEMAND, VALUES, 1, [0, 1, 0, 0], floor_cap=2, crowding=1,
-                             **HAND)
+    roi = model.marginal_roi(inst(floor_cap=2, crowding=1), [0, 1, 0, 0])
     assert roi.net.isna().all()
 
 
@@ -246,29 +258,27 @@ def test_marginal_roi_matches_frontier_slope():
     # The plan plus one temp fits under cap H+1, so it cannot beat that LP bound: the saving
     # exceeds the slope by at most the plan's own gap to its bound. The lower side has no proof
     # but held at every cap tried (30-60). Overtime off: the check targets temps.
-    demand, vals, base = black_friday()
-    kw = dict(overtime_daily=0)
+    problem = black_friday(overtime_daily=0)
     for cap in (30, 50):
-        plan = model.solve(demand, vals, base, max_temps=cap, **kw)
-        roi = model.marginal_roi(demand, vals, base, plan.temps, **kw)
-        slope = plan.lower_bound - model.solve(demand, vals, base, max_temps=cap + 1,
-                                               **kw).lower_bound
+        plan = model.solve(problem, max_temps=cap)
+        roi = model.marginal_roi(problem, plan.temps)
+        slope = plan.lower_bound - model.solve(problem, max_temps=cap + 1).lower_bound
         assert abs(roi.net.max() - slope) <= plan.gap_cost + 1e-6
     assert roi.net.isna().any()  # Black Friday's peak fills the floor
 
 
 @needs_olist
 def test_frontier_on_black_friday():
-    demand, vals, base = black_friday()
+    problem = black_friday()
     start = time.perf_counter()
-    plan = model.solve(demand, vals, base)
+    plan = model.solve(problem)
     assert time.perf_counter() - start < 10
-    plans = model.frontier(demand, vals, base)
+    plans = model.frontier(problem)
     spill = [p.spill_cost for p in plans]
     labour = [p.labour_cost for p in plans]
     assert all(b <= a + 1e-6 for a, b in zip(spill, spill[1:]))
     assert all(b >= a - 1e-6 for a, b in zip(labour, labour[1:]))
-    assert spill[0] == pytest.approx(model.solve(demand, vals, base, max_temps=0).spill_cost)
+    assert spill[0] == pytest.approx(model.solve(problem, max_temps=0).spill_cost)
     assert plans[-1].total_cost == pytest.approx(plan.lower_bound)
 
 
@@ -276,10 +286,9 @@ def test_frontier_on_black_friday():
 def test_truck_delay_never_costs_more_on_black_friday():
     # A later truck only gives the floor more time. Measured against targets from the delayed
     # schedule, orders newly able to reach it counted as late (spill 1,144 -> 1,343).
-    demand, vals, base = black_friday()
-    plan = model.solve(demand, vals, base)
-    before, after = model.what_if(demand, vals, base, plan, 14,
-                                  {"truck_delay": [{"state": "RJ", "minutes": 45}]})
+    problem = black_friday()
+    before, after = model.what_if(problem, model.solve(problem), 14,
+                                  Scenario(truck_delay=[{"state": "RJ", "minutes": 45}]))
     assert after.total_cost <= before.total_cost + 1e-6
     assert after.spilled.sum() <= before.spilled.sum() + 1e-6
 

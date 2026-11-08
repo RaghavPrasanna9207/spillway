@@ -11,9 +11,15 @@ pytestmark = pytest.mark.skipif(not (data.RAW / "olist_orders_dataset.csv").exis
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
 
-def test_buffer_slider_moves_the_plan_and_simulation_runs(monkeypatch):
-    monkeypatch.setenv("LLM_MODEL", "")  # the app keeps it over .streamlit/secrets.toml
-    app = AppTest.from_file(APP, default_timeout=120).run()
+def new_app():
+    """The app with no LLM, whatever .streamlit/secrets.toml says."""
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.secrets["LLM_MODEL"] = ""
+    return app
+
+
+def test_buffer_slider_moves_the_plan_and_simulation_runs():
+    app = new_app().run()
     assert not app.exception
     labour = app.metric[1].value
     app.slider(key="buffer").set_value(1.3).run()
@@ -28,9 +34,8 @@ def test_buffer_slider_moves_the_plan_and_simulation_runs(monkeypatch):
     assert len(app.dataframe) == 1
 
 
-def test_what_if_example_applies_without_an_llm(monkeypatch):
-    monkeypatch.setenv("LLM_MODEL", "")
-    app = AppTest.from_file(APP, default_timeout=120).run()
+def test_what_if_example_applies_without_an_llm():
+    app = new_app().run()
     app.selectbox(key="example").select("The Rio truck is running 45 minutes late").run()
     app.button(key="use_example").click().run()
     app.button(key="apply").click().run()
@@ -40,10 +45,9 @@ def test_what_if_example_applies_without_an_llm(monkeypatch):
 
 
 def test_app_runs_from_committed_arrays_without_the_csvs(monkeypatch, tmp_path):
-    monkeypatch.setenv("LLM_MODEL", "")
-    with_csvs = AppTest.from_file(APP, default_timeout=120).run()
+    with_csvs = new_app().run()
     monkeypatch.setattr(data, "RAW", tmp_path)  # no CSVs here
     st.cache_data.clear()  # or load() returns the CSV result
-    without = AppTest.from_file(APP, default_timeout=120).run()
+    without = new_app().run()
     assert not without.exception
     assert [m.value for m in without.metric] == [m.value for m in with_csvs.metric]

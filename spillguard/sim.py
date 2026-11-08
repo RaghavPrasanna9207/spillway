@@ -14,24 +14,23 @@ from spillguard import model
 POLICIES = ("fifo", "earliest_truck", "replan")
 
 
-def run(forecast, actual, tier_values, base, temps, policy, noise=True, seed=0, replan_every=2,
-        penalty_scale=1.0, deps=None, overtime=None, same_day_overtime=True, **limits):
+def run(inst, actual, temps, policy, noise=True, seed=0, replan_every=2, overtime=None,
+        same_day_overtime=True):
     """Simulate one realisation; returns a model.Plan of what actually happened.
 
-    forecast: [hour, state, tier] demand the re-plan expects for hours not yet seen.
+    inst: model.Instance whose demand is the forecast the re-plan expects for hours not yet
+        seen; its trucks, limits, headcount and penalty apply to every policy.
     actual: [hour, state, tier] mean realised demand (Poisson-sampled when noise is on).
     temps: temp shifts by start hour, fixed for every policy.
     replan_every: hours between re-plan solves. ponytail: solving now dominates (the LP is
         built once per run, 1.6x faster than rebuilding), so hourly runs take about twice as
         long as the 2-hour default, which costs ~1% more spill. Upgrade: cache results per
         scenario in the app, or OR-Tools MathOpt for incremental GLOP solves.
-    deps: departure-time arrays per state (defaults to the configured truck schedule).
     overtime: planned permanent overtime picker-hours per wave (Plan.overtime). FIFO and
         earliest-truck keep it; not hit by absence, since those pickers are already on shift.
     same_day_overtime: the re-plan re-chooses overtime from the real backlog for every wave not
         yet worked, within the same caps (hours already worked count toward the day's cap).
         Labour cost counts the overtime actually worked.
-    limits: floor_cap, crowding, pack_cap, as for model.solve.
     """
     H, S, V = actual.shape
     W = H + model.LOOKAHEAD
@@ -39,16 +38,13 @@ def run(forecast, actual, tier_values, base, temps, policy, noise=True, seed=0, 
     ot = np.zeros(W)
     if overtime is not None:
         ot[:min(W, len(overtime))] = overtime[:W]
-    lim = model.resolve_limits(base, **limits)
-    rate = model.delay_cost_per_hour(tier_values, penalty_scale)
-    if deps is None:
-        deps = [model.departures(s, W + model.BACKLOG_DELAY_H + 48) for s in cfg.DEST_STATES]
+    base, lim, rate = inst.base, inst.lim, inst.rate
     # dep_at[w, s]: departure time of the truck wave w catches for state s
-    dep_at = np.stack(
-        [d[np.searchsorted(d, np.arange(W + 1) + 1 + cfg.LOADING_BUFFER_H)] for d in deps], 1)
+    catches = np.arange(W + 1) + 1 + cfg.LOADING_BUFFER_H
+    dep_at = np.stack([d[np.searchsorted(d, catches)] for d in inst.deps], 1)
 
     rng = np.random.default_rng(seed)
-    on = model.on_shift(np.pad(temps, (0, W - H)), W).round().astype(int)
+    on = model.on_shift(temps, W).round().astype(int)
     if noise:
         # ponytail: absence drawn per hour, so it never lasts a whole shift; draw per shift
         # if the spread of results looks too narrow.
@@ -60,8 +56,7 @@ def run(forecast, actual, tier_values, base, temps, policy, noise=True, seed=0, 
         arrivals, perm, temp, speed = actual.astype(float), np.full(W, base), on, np.ones(W)
 
     if policy == "replan":
-        replanner = model.Replanner(forecast, tier_values, base, temps, deps=deps,
-                                    penalty_scale=penalty_scale, **limits)
+        replanner = model.Replanner(inst, temps)
     hours = np.arange(H)
     rem = np.zeros((H, S, V))  # orders waiting, by arrival hour
     spilled = np.zeros((S, V))
@@ -114,12 +109,12 @@ def run(forecast, actual, tier_values, base, temps, policy, noise=True, seed=0, 
     )
 
 
-def compare(forecast, actual, tier_values, base, temps, runs=10, **kw):
+def compare(inst, actual, temps, runs=10, **kw):
     """{policy: {kpi: (mean, 95% CI half-width)}} over `runs` seeds. Labour cost differs between
     policies when the re-plan changes overtime on the day."""
     out = {}
     for p in POLICIES:
-        plans = [run(forecast, actual, tier_values, base, temps, p, seed=i, **kw)
+        plans = [run(inst, actual, temps, p, seed=i, **kw)
                  for i in range(runs)]
         out[p] = {k: _mean_ci([getattr(x, k) for x in plans])
                   for k in ("spill_rate", "spill_cost", "labour_cost", "total_cost")}

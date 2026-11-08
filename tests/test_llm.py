@@ -1,6 +1,7 @@
 """Offline tests use canned replies. The live tests run the same sentences through the configured
 LLM and are skipped unless LLM_MODEL is set (with LLM_BASE_URL and LLM_API_KEY as needed)."""
 import json
+import os
 import re
 from datetime import date, timedelta
 
@@ -8,6 +9,7 @@ import pytest
 
 from spillguard import config as cfg
 from spillguard import llm
+from spillguard.scenario import Scenario
 
 CASES = [
     ("The Rio truck is running 45 minutes late", {"truck_delay": [{"state": "RJ", "minutes": 45}]}),
@@ -38,12 +40,12 @@ def reply(text):
 
 @pytest.mark.parametrize("sentence, expected", CASES)
 def test_canned_replies_are_valid_scenarios(sentence, expected):
-    assert llm.parse(sentence, reply(json.dumps(expected))) == llm.Scenario(**expected)
+    assert llm.parse(sentence, reply(json.dumps(expected))) == Scenario(**expected)
 
 
 def test_parse_skips_code_fences_and_chatter():
     text = 'Sure:\n```json\n{"perm_absent": 2}\n```\nLet me know!'
-    assert llm.parse("x", reply(text)) == llm.Scenario(perm_absent=2)
+    assert llm.parse("x", reply(text)) == Scenario(perm_absent=2)
 
 
 @pytest.mark.parametrize("text", [
@@ -79,24 +81,46 @@ def test_cap_blocks_after_limit_and_resets_next_day(monkeypatch):
     llm._spend_call()
 
 
-def test_unconfigured_llm_raises_without_spending_a_call(monkeypatch):
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.setattr(llm, "_used", {"day": None, "calls": 0})
-    with pytest.raises(RuntimeError):
-        llm.parse("Two pack stations are down")
-    assert llm._used["calls"] == 0
+def test_settings_without_a_model_mean_no_llm():
+    assert llm.LLMConfig.from_settings({}) is None
+    assert llm.LLMConfig.from_settings({"LLM_MODEL": "", "LLM_API_KEY": "k"}) is None
+    config = llm.LLMConfig.from_settings({"LLM_MODEL": "m"})
+    assert (config.model, config.base_url) == ("m", cfg.LLM_DEFAULT_BASE_URL)
 
 
-live = pytest.mark.skipif(not llm.configured(), reason="LLM_MODEL not set")
+def raising(error):
+    def chat(system, user):
+        raise error
+    return chat
+
+
+@pytest.mark.parametrize("chat, reason", [
+    (None, "no LLM configured"),
+    (raising(llm.CapReached("cap")), "today's LLM limit is used up"),
+    (raising(OSError("network down")), "the LLM failed (network down)"),
+    (reply("Plan 52 temp shifts."), "the LLM failed (briefing states numbers it was not given"),
+])
+def test_briefing_falls_back_with_a_reason(chat, reason):
+    text, why = llm.briefing_or("fallback", FACTS, chat)
+    assert text == "fallback" and why.startswith(reason)
+
+
+def test_briefing_or_keeps_a_valid_briefing():
+    ok = "Plan 51 temp shifts for R$13,699; spill stays at 3.3%."
+    assert llm.briefing_or("fallback", FACTS, reply(ok)) == (ok, None)
+
+
+CONFIG = llm.LLMConfig.from_settings(os.environ)
+live = pytest.mark.skipif(CONFIG is None, reason="LLM_MODEL not set")
 
 
 @live
 @pytest.mark.parametrize("sentence, expected", CASES)
 def test_live_parse(sentence, expected):
-    assert llm.parse(sentence) == llm.Scenario(**expected)
+    assert llm.parse(sentence, llm.chat_with(CONFIG)) == Scenario(**expected)
 
 
 @live
 def test_live_briefing_is_prose_with_only_given_numbers():
-    text = llm.briefing(FACTS)  # raises on an invented number
+    text = llm.briefing(FACTS, llm.chat_with(CONFIG))  # raises on an invented number
     assert len(re.findall(r"[.!?](?:\s|$)", text)) >= 2, text  # sentences, not a list
